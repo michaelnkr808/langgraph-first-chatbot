@@ -6,15 +6,19 @@ from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langchain_tavily import TavilySearch
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import ToolMessage, AIMessage
+from langgraph.checkpoint.memory import InMemorySaver
+
 
 os.environ["GOOGLE_API_KEY"] = "AIzaSyBw-hFkdAqXXEezjiS3GnbXKcHxskPn5DM"
 os.environ["TAVILY_API_KEY"] = "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"
 
+memory = InMemorySaver()
 llm = init_chat_model("google_genai:gemini-2.0-flash")
 tool = TavilySearch(max_results=2)
 tools = [tool]
 tool.invoke("What's a 'node' in LangGraph?")
+config = {"configurable": {"thread_id": "1"}}
 
 class BasicToolNode:
     def __init__(self, tools:list) -> None:
@@ -42,16 +46,10 @@ class State(TypedDict):
     messages: Annotated[list, add_messages]
 
 graph_builder = StateGraph(State)
-
 llm_with_tools = llm.bind_tools(tools)
 
 def chatbot(state: State):
     return {"messages" : [llm_with_tools.invoke(state["messages"])]}
-
-def stream_graph_updates(user_input: str):
-    for event in graph.stream({"messages": [{"role": "user", "content": user_input}]}):
-        for value in event.values():
-            print("Assistant:", value["messages"][-1].content)
 
 def route_tools(
         state: State,
@@ -80,8 +78,20 @@ graph_builder.add_conditional_edges(
     {"tools": "tools", END: END},
 )
 
-graph = graph_builder.compile()
+graph = graph_builder.compile(checkpointer = memory)
 
+def stream_graph_updates(user_input: str):
+    events = graph.stream(
+        {"messages": [{"role": "user", "content": user_input}]},
+        config,
+        stream_mode = "values",
+    )  
+
+
+    for event in events:
+        last_message = event["messages"][-1]
+        if isinstance(last_message, AIMessage) and last_message.content:
+            print("Assistant:", last_message.content)
 
 while True:
     try:
